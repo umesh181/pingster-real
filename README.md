@@ -1,8 +1,8 @@
-# PingPanda - A Modern Fullstack Event Monitoring SaaS
+# pingster - A Modern Fullstack Event Monitoring SaaS
 
 Built with the Next.js App Router, Postgres, TypeScript, Tailwind & Clerk
 
-![Project Image](https://github.com/joschan21/pingpanda/blob/main/public/thumbnail.png)
+![Project Image](https://github.com/joschan21/pingster/blob/main/public/thumbnail.png)
 
 ## Features
 
@@ -23,7 +23,7 @@ Built with the Next.js App Router, Postgres, TypeScript, Tailwind & Clerk
 To get started with this project, run
 
 ```bash
-  git clone https://github.com/joschan21/pingpanda.git
+  git clone https://github.com/joschan21/pingster.git
 ```
 
 and copy the .env.example variables into a separate .env file, fill them out & and that's all you need to get started!

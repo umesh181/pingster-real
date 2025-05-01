@@ -15,6 +15,33 @@ const REQUEST_VALIDATOR = z
 
 export const POST = async (req: NextRequest) => {
   try {
+    // Parse request JSON upfront to catch JSON parsing errors early
+    let requestData: unknown
+    try {
+      requestData = await req.json()
+    } catch (err) {
+      console.error("Invalid JSON request body:", err)
+      return NextResponse.json(
+        {
+          message: "Invalid JSON request body",
+        },
+        { status: 400 }
+      )
+    }
+
+    // Validate the request data
+    let validationResult
+    try {
+      validationResult = REQUEST_VALIDATOR.parse(requestData)
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        console.error("Validation error:", err.message)
+        return NextResponse.json({ message: err.message }, { status: 422 })
+      }
+      throw err
+    }
+
+    // Auth check
     const authHeader = req.headers.get("Authorization")
 
     if (!authHeader) {
@@ -36,12 +63,14 @@ export const POST = async (req: NextRequest) => {
       return NextResponse.json({ message: "Invalid API key" }, { status: 401 })
     }
 
+    // Find user
     const user = await db.user.findUnique({
       where: { apiKey },
       include: { EventCategories: true },
     })
 
     if (!user) {
+      console.error(`User not found for API key: ${apiKey}`)
       return NextResponse.json({ message: "Invalid API key" }, { status: 401 })
     }
 
@@ -54,16 +83,33 @@ export const POST = async (req: NextRequest) => {
       )
     }
 
-    // ACTUAL LOGIC
+    // Check category
+    const category = user.EventCategories.find(
+      (cat) => cat.name === validationResult.category
+    )
+
+    if (!category) {
+      console.error(`Category not found: ${validationResult.category} for user ${user.id}`)
+      return NextResponse.json(
+        {
+          message: `You dont have a category named "${validationResult.category}"`,
+        },
+        { status: 404 }
+      )
+    }
+
+    // Check quota
     const currentData = new Date()
     const currentMonth = currentData.getMonth() + 1
     const currentYear = currentData.getFullYear()
 
     const quota = await db.quota.findUnique({
       where: {
-        userId: user.id,
-        month: currentMonth,
-        year: currentYear,
+        userId_year_month: {
+          userId: user.id,
+          month: currentMonth,
+          year: currentYear,
+        }
       },
     })
 
@@ -82,38 +128,7 @@ export const POST = async (req: NextRequest) => {
       )
     }
 
-    const discord = new DiscordClient(process.env.DISCORD_BOT_TOKEN)
-
-    const dmChannel = await discord.createDM(user.discordId)
-
-    let requestData: unknown
-
-    try {
-      requestData = await req.json()
-    } catch (err) {
-      return NextResponse.json(
-        {
-          message: "Invalid JSON request body",
-        },
-        { status: 400 }
-      )
-    }
-
-    const validationResult = REQUEST_VALIDATOR.parse(requestData)
-
-    const category = user.EventCategories.find(
-      (cat) => cat.name === validationResult.category
-    )
-
-    if (!category) {
-      return NextResponse.json(
-        {
-          message: `You dont have a category named "${validationResult.category}"`,
-        },
-        { status: 404 }
-      )
-    }
-
+    // Create event record first
     const eventData = {
       title: `${category.emoji || "🔔"} ${
         category.name.charAt(0).toUpperCase() + category.name.slice(1)
@@ -144,16 +159,47 @@ export const POST = async (req: NextRequest) => {
       },
     })
 
+    // Try to deliver to Discord
     try {
-      await discord.sendEmbed(dmChannel.id, eventData)
+      if (!process.env.DISCORD_BOT_TOKEN) {
+        console.error("Discord bot token is missing")
+        throw new Error("Discord bot token is not configured")
+      }
+      
+      const discord = new DiscordClient(process.env.DISCORD_BOT_TOKEN)
+      
+      // Create DM channel
+      const dmChannel = await discord.createDM(user.discordId).catch(err => {
+        console.error("Error creating Discord DM channel:", err)
+        throw new Error(`Failed to create Discord DM: ${err.message || 'Unknown error'}`)
+      })
+      
+      if (!dmChannel || !dmChannel.id) {
+        console.error("Invalid DM channel response:", dmChannel)
+        throw new Error("Failed to create Discord DM: Invalid channel")
+      }
 
+      // Send message
+      await discord.sendEmbed(dmChannel.id, eventData).catch(err => {
+        console.error("Error sending Discord embed:", err)
+        throw new Error(`Failed to send Discord message: ${err.message || 'Unknown error'}`)
+      })
+
+      // Update delivery status
       await db.event.update({
         where: { id: event.id },
         data: { deliveryStatus: "DELIVERED" },
       })
 
+      // Update quota
       await db.quota.upsert({
-        where: { userId: user.id, month: currentMonth, year: currentYear },
+        where: {
+          userId_year_month: {
+            userId: user.id,
+            month: currentMonth,
+            year: currentYear,
+          }
+        },
         update: { count: { increment: 1 } },
         create: {
           userId: user.id,
@@ -162,36 +208,37 @@ export const POST = async (req: NextRequest) => {
           count: 1,
         },
       })
+      
+      return NextResponse.json({
+        message: "Event processed successfully",
+        eventId: event.id,
+      })
     } catch (err) {
+      console.error("Error during Discord delivery:", err)
+      
+      // Update event status to failed
       await db.event.update({
         where: { id: event.id },
         data: { deliveryStatus: "FAILED" },
       })
 
-      console.log(err)
-
       return NextResponse.json(
         {
-          message: "Error processing event",
+          message: "Error processing event: " + (err instanceof Error ? err.message : "Unknown error"),
           eventId: event.id,
         },
         { status: 500 }
       )
     }
-
-    return NextResponse.json({
-      message: "Event processed successfully",
-      eventId: event.id,
-    })
   } catch (err) {
-    console.error(err)
+    console.error("Unhandled error in events endpoint:", err)
 
     if (err instanceof z.ZodError) {
       return NextResponse.json({ message: err.message }, { status: 422 })
     }
 
     return NextResponse.json(
-      { message: "Internal server error" },
+      { message: "Internal server error" + (err instanceof Error ? `: ${err.message}` : "") },
       { status: 500 }
     )
   }
