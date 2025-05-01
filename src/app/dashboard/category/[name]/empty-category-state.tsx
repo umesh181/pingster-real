@@ -33,7 +33,7 @@ export const EmptyCategoryState = ({
     if (hasEvents) router.refresh()
   }, [hasEvents, router])
 
-  const codeSnippet = `await fetch('http://pingsterr.vercel.app/api/v1/events', {
+  const codeSnippet = `await fetch('https://pingsterr.vercel.app/api/v1/events', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer YOUR_API_KEY'
